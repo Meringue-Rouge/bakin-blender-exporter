@@ -1,7 +1,7 @@
 bl_info = {
     "name": "Bakin Model Exporter",
     "author": "ingenoire",
-    "version": (1, 0),
+    "version": (1, 5),
     "blender": (2, 80, 0),
     "location": "View3D > Sidebar > Bakin Model Exporter Tab",
     "description": (
@@ -122,7 +122,7 @@ class ExportFBXOperator(Operator):
                 return {'CANCELLED'}
             
             model_name = context.scene.model_name
-            dirpath = bpy.path.abspath("//" + model_name)
+            dirpath = bpy.path.abspath("//" + sanitize_filename(model_name))
             os.makedirs(dirpath, exist_ok=True)
             
             for image in bpy.data.images:
@@ -135,9 +135,6 @@ class ExportFBXOperator(Operator):
                 filepath=filepath,
                 use_selection=False,
                 global_scale=0.01,
-                use_mesh_modifiers=False,
-                use_triangles=True,
-                add_leaf_bones=False,
                 use_tspace=True
             )
 
@@ -160,16 +157,27 @@ class ExportFBXOperator(Operator):
 
         return {'FINISHED'}
 
-def find_texture_node(node):
+def find_texture_node(node, checked_nodes=None):
+    """Recursively finds the first linked texture node, avoiding loops."""
+    if checked_nodes is None:
+        checked_nodes = set()
+    
+    if node in checked_nodes:
+        return None  # Avoid infinite loops
+    
+    checked_nodes.add(node)
+
     if node and node.type == 'TEX_IMAGE':
         return node
+    
     for input in node.inputs:
         if input.is_linked:
             for link in input.links:
-                tex_node = find_texture_node(link.from_node)
+                tex_node = find_texture_node(link.from_node, checked_nodes)
                 if tex_node:
                     return tex_node
     return None
+
 
 def create_dummy_image(name, width, height):
     dummy_image = bpy.data.images.new(name, width=width, height=height)
@@ -318,6 +326,18 @@ class SimpleOperatorPanel(Panel):
         layout.label(text=TEXT[scene.language]['model_name'], icon="LINE_DATA")
         layout.prop(scene, "model_name")
         layout.separator()
+        
+        # Texture Detection Section
+        layout.label(text="Texture Detector", icon="IMAGE_DATA")
+        layout.operator("object.detect_textures", text="Scan Textures", icon="VIEWZOOM")
+
+        if len(scene.detected_textures) > 0:
+            box = layout.box()
+            box.label(text="Detected Textures:", icon="TEXTURE")
+            for item in scene.detected_textures:
+                row = box.row()
+                row.label(text=f"{item.material_name} - {item.texture_type}: {item.texture_name}")
+
 
         # Add a header and checkboxes for inversion options
         layout.label(text=TEXT[scene.language]['mask_map_options'], icon="TEXTURE_DATA")
@@ -430,6 +450,92 @@ def write_def_file(material, f, mask_map_filename):
     f.write("UVRotateAnimation 0.000000\n")
     f.write("\n")
 
+# Custom property group to store texture details
+class DetectedTextureItem(bpy.types.PropertyGroup):
+    material_name: bpy.props.StringProperty(name="Material Name")
+    texture_type: bpy.props.StringProperty(name="Texture Type")
+    texture_name: bpy.props.StringProperty(name="Texture Name")
+
+def get_texture_from_node(node, visited_nodes=None):
+    """
+    Recursively traverse node connections to find the first linked texture image.
+    """
+    if visited_nodes is None:
+        visited_nodes = set()
+    
+    if node in visited_nodes:  # Prevent infinite loops
+        return None
+    visited_nodes.add(node)
+    
+    if node.type == 'TEX_IMAGE' and node.image:
+        return node.image.name  # Found the texture
+    
+    # Check node inputs for connected nodes
+    for input_socket in node.inputs:
+        if input_socket.is_linked:
+            from_node = input_socket.links[0].from_node
+            found_texture = get_texture_from_node(from_node, visited_nodes)
+            if found_texture:
+                return found_texture  # Return the first found texture
+
+    return None
+
+def get_material_textures(material):
+    """
+    Find textures linked to the Principled BSDF node in a material.
+    Now follows child nodes recursively.
+    """
+    if not material.use_nodes or not material.node_tree:
+        return {}
+
+    texture_map = {
+        "Base Color": None,
+        "Normal": None,
+        "Emission": None,
+        "Specular": None,
+        "Metallic": None,
+        "Roughness": None,
+    }
+
+    node_tree = material.node_tree
+    nodes = node_tree.nodes
+
+    # Locate the Principled BSDF node
+    principled_bsdf = next((node for node in nodes if node.type == 'BSDF_PRINCIPLED'), None)
+    if not principled_bsdf:
+        return {}
+
+    # Check connections recursively
+    for key in texture_map.keys():
+        input_socket = principled_bsdf.inputs.get(key)
+        if input_socket and input_socket.is_linked:
+            from_node = input_socket.links[0].from_node
+            texture_map[key] = get_texture_from_node(from_node)
+
+    return {key: value for key, value in texture_map.items() if value}  # Remove empty values
+
+
+class DetectTexturesOperator(bpy.types.Operator):
+    """Detect textures linked to materials and update UI"""
+    bl_idname = "object.detect_textures"
+    bl_label = "Detect Textures"
+    
+    def execute(self, context):
+        context.scene.detected_textures.clear()  # Clear previous results
+        
+        for obj in bpy.context.selected_objects:
+            if obj.type == 'MESH':
+                for material in obj.data.materials:
+                    if material:
+                        textures = get_material_textures(material)
+                        for tex_type, tex_name in textures.items():
+                            item = context.scene.detected_textures.add()
+                            item.material_name = material.name
+                            item.texture_type = tex_type
+                            item.texture_name = tex_name
+
+        return {'FINISHED'}
+
 def register():
     bpy.types.Scene.model_name = bpy.props.StringProperty(
         name="Model Name",
@@ -464,6 +570,9 @@ def register():
     bpy.utils.register_class(SimpleOperatorPanel)
     bpy.utils.register_class(ExportFBXOperator)
     bpy.utils.register_class(SwitchLanguageOperator)
+    bpy.utils.register_class(DetectedTextureItem)
+    bpy.types.Scene.detected_textures = bpy.props.CollectionProperty(type=DetectedTextureItem)
+    bpy.utils.register_class(DetectTexturesOperator)
 
 def unregister():
     del bpy.types.Scene.model_name
@@ -472,6 +581,9 @@ def unregister():
     del bpy.types.Scene.invert_emissive
     del bpy.types.Scene.invert_specular
     del bpy.types.Scene.language
+    del bpy.types.Scene.detected_textures
+    bpy.utils.unregister_class(DetectedTextureItem)
+    bpy.utils.unregister_class(DetectTexturesOperator)
     bpy.utils.unregister_class(SimpleOperatorPanel)
     bpy.utils.unregister_class(ExportFBXOperator)
     bpy.utils.unregister_class(SwitchLanguageOperator)
