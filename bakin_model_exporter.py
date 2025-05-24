@@ -44,10 +44,10 @@ TEXT = {
         'cull_none': "Double Sided",
         'cull_double': "Invisible",
         'use_mask_map': "Use Mask Map",
-        'invert_roughness': "Invert Roughness",
-        'invert_metallic': "Invert Metallic",
-        'invert_emissive': "Invert Emissive",
-        'invert_specular': "Invert Specular",
+        'invert_roughness': "Inv Rough",
+        'invert_metallic': "Inv Met",
+        'invert_emissive': "Inv Emis",
+        'invert_specular': "Inv Spec",
         'sss_coeff': "SSS Coeff",
         'texture_base': "Base",
         'texture_norm': "Norm",
@@ -56,7 +56,13 @@ TEXT = {
         'texture_emis': "Emis",
         'texture_spec': "Spec",
         'texture_sss': "SSS",
-        'settings_toggle': "Settings"
+        'settings_toggle': "Settings",
+        'discard_threshold': "Discard Threshold",
+        'generate_texture': "Generate {texture_type} Texture",
+        'generate_texture_prompt': "Generate a {texture_type} texture for material '{material_name}'?",
+        'no_albedo_error': "Cannot generate texture: Albedo (Base Color) texture is missing!",
+        'texture_save_error': "Failed to save texture: {error}",
+        'invalid_input_error': "Cannot link texture: Input '{input_key}' not found on Principled BSDF node. Available inputs: {available_inputs}"
     },
     'jp': {
         'model_name': "モデル名",
@@ -86,7 +92,7 @@ TEXT = {
         'invert_roughness': "ラフネス反転",
         'invert_metallic': "メタリック反転",
         'invert_emissive': "エミッシブ反転",
-        'invert_specular': "スペキュラ反転",
+        'invert_specular': "スペキュラー反転",
         'sss_coeff': "SSS係数",
         'texture_base': "ベース",
         'texture_norm': "ノーマル",
@@ -95,7 +101,13 @@ TEXT = {
         'texture_emis': "エミッシブ",
         'texture_spec': "スペキュラー",
         'texture_sss': "SSS",
-        'settings_toggle': "設定"
+        'settings_toggle': "設定",
+        'discard_threshold': "ディスカード閾値",
+        'generate_texture': "{texture_type} テクスチャを生成",
+        'generate_texture_prompt': "マテリアル '{material_name}' の {texture_type} テクスチャを生成しますか？",
+        'no_albedo_error': "テクスチャを生成できません：アルベド（ベースカラー）テクスチャがありません！",
+        'texture_save_error': "テクスチャの保存に失敗しました：{error}",
+        'invalid_input_error': "テクスチャをリンクできません：Principled BSDF ノードに '{input_key}' 入力が見つかりません。利用可能な入力：{available_inputs}"
     },
     'zh': {
         'model_name': "模型名称",
@@ -122,8 +134,8 @@ TEXT = {
         'cull_none': "双面",
         'cull_double': "不可见",
         'use_mask_map': "使用蒙版贴图",
-        'invert_roughness': "反转粗糙度",
-        'invert_metallic': "反转金属度",
+        'invert_roughness': "反转粗糙",
+        'invert_metallic': "反转金属",
         'invert_emissive': "反转自发光",
         'invert_specular': "反转高光",
         'sss_coeff': "SSS系数",
@@ -134,7 +146,13 @@ TEXT = {
         'texture_emis': "自发光",
         'texture_spec': "高光",
         'texture_sss': "SSS",
-        'settings_toggle': "设置"
+        'settings_toggle': "设置",
+        'discard_threshold': "丢弃阈值",
+        'generate_texture': "生成{texture_type}贴图",
+        'generate_texture_prompt': "为材质 '{material_name}' 生成{texture_type}贴图？",
+        'no_albedo_error': "无法生成贴图：缺少反照率（基础颜色）贴图！",
+        'texture_save_error': "保存贴图失败：{error}",
+        'invalid_input_error': "无法链接贴图：Principled BSDF 节点上未找到输入 '{input_key}'。可用输入：{available_inputs}"
     }
 }
 
@@ -154,7 +172,9 @@ texture_dict = {
 SHADER_OPTIONS = [
     ('a_n_rm 542d323fb6604f468eb8fd99b29502d8', "A_N_RM", "Default shader"),
     ('a_n_rm_discard 0d973c7e0eaf4bf2b1b8470c15571799', "A_N_RM_DISCARD", "Discard shader"),
-    ('a_n_rm_sss_discard 5d7bee168e844ad0bcdca0ea7ff09996', "A_N_RM_SSS_DISCARD", "SSS Discard shader")
+    ('a_n_rm_sss_discard 5d7bee168e844ad0bcdca0ea7ff09996', "A_N_RM_SSS_DISCARD", "SSS Discard shader"),
+    ('a_n 09ed65ad49b4492da5d217339562c62f', "A_N", "A_N shader"),
+    ('a_n_discard 75433c209c1c46fa847e6f03c59e02cb', "A_N_DISCARD", "A_N Discard shader")
 ]
 
 # Cull mode options for the dropdown
@@ -288,7 +308,7 @@ def generate_unity_mask_map(material, output_path, material_item):
     specular_tex_image = get_image_from_node(principled_bsdf.inputs.get('Specular', None))
     
     if specular_tex_image is None:
-        specular_tex_image = get_image_from_node(principled_bsdf.inputs.get('IOR Level', None))
+        specular_tex_image = get_image_from_node(principled_bsdf.inputs.get('Specular IOR Level', None))
 
     # Check if any textures exist for the mask map
     if not any([metallic_tex_image, roughness_tex_image, emissive_tex_image, specular_tex_image]):
@@ -445,11 +465,191 @@ def generate_sss_map(material, output_path, material_item):
     comp_links.new(rgb_to_bw_node.outputs['Val'], output_node.inputs['Image'])
 
     # Render the scene to create the grayscale image
-    output_file_path = os.path.join(output_path, f"{output_filename}.png")
+    output_file_path = os.path.join(output_path, f"{output_filename}0001.png")
     bpy.context.scene.render.filepath = output_file_path
     bpy.ops.render.render(write_still=True)
 
     return output_filename
+
+def generate_texture(material, texture_type, output_path, context):
+    """Generate a texture of the specified type based on the Albedo texture."""
+    if not material.use_nodes or not material.node_tree:
+        return None, "Material does not use nodes."
+
+    nodes = material.node_tree.nodes
+    links = material.node_tree.links
+
+    # Find Principled BSDF node
+    principled_bsdf = next((node for node in nodes if node.type == 'BSDF_PRINCIPLED'), None)
+    if not principled_bsdf:
+        return None, "No Principled BSDF shader found."
+
+    # Get Albedo (Base Color) texture
+    base_color_input = principled_bsdf.inputs.get('Base Color')
+    if not base_color_input or not base_color_input.is_linked:
+        return None, TEXT[context.scene.language]['no_albedo_error']
+    
+    base_color_node = find_texture_node(base_color_input.links[0].from_node)
+    if not base_color_node or not base_color_node.image:
+        return None, TEXT[context.scene.language]['no_albedo_error']
+    
+    base_color_image = base_color_node.image
+    width, height = base_color_image.size
+
+    # Set up compositing
+    comp_scene = context.scene
+    comp_scene.use_nodes = True
+    comp_tree = comp_scene.node_tree
+    comp_nodes = comp_tree.nodes
+    comp_links = comp_tree.links
+
+    # Clear existing nodes
+    for node in comp_nodes:
+        comp_nodes.remove(node)
+
+    # Add base image node
+    base_node = comp_nodes.new(type='CompositorNodeImage')
+    base_node.image = base_color_image
+
+    # Output node
+    output_filename = f"{sanitize_filename(material.name)}_{texture_type}"
+    output_node = comp_nodes.new(type='CompositorNodeOutputFile')
+    output_node.base_path = output_path
+    output_node.file_slots[0].path = output_filename
+
+    # Generate texture based on type
+    if texture_type == "Normal":
+        # Generate a basic normal map (neutral blue)
+        rgb_node = comp_nodes.new(type='CompositorNodeRGB')
+        rgb_node.outputs[0].default_value = (0.5, 0.5, 1.0, 1.0)  # Neutral normal (blue)
+        comp_links.new(rgb_node.outputs['RGBA'], output_node.inputs['Image'])
+    elif texture_type in ["Metallic", "Roughness", "Specular", "Subsurface"]:
+        # Convert Albedo to grayscale for Metallic, Roughness, Specular, Subsurface
+        rgb_to_bw_node = comp_nodes.new(type='CompositorNodeRGBToBW')
+        comp_links.new(base_node.outputs['Image'], rgb_to_bw_node.inputs['Image'])
+        if texture_type == "Roughness":
+            # Invert for Roughness (white = rough)
+            invert_node = comp_nodes.new(type='CompositorNodeInvert')
+            comp_links.new(rgb_to_bw_node.outputs['Val'], invert_node.inputs['Color'])
+            comp_links.new(invert_node.outputs['Color'], output_node.inputs['Image'])
+        else:
+            # Metallic, Specular, Subsurface (white = high effect)
+            comp_links.new(rgb_to_bw_node.outputs['Val'], output_node.inputs['Image'])
+    elif texture_type == "Emission":
+        # Darken Albedo for Emission (only bright areas glow)
+        brightness_node = comp_nodes.new(type='CompositorNodeBrightContrast')
+        brightness_node.inputs['Bright'].default_value = -0.5
+        brightness_node.inputs['Contrast'].default_value = 1.0
+        comp_links.new(base_node.outputs['Image'], brightness_node.inputs['Image'])
+        comp_links.new(brightness_node.outputs['Image'], output_node.inputs['Image'])
+
+    # Render the texture
+    output_file_path = os.path.join(output_path, f"{output_filename}0001.png")
+    comp_scene.render.filepath = output_file_path
+    try:
+        bpy.ops.render.render(write_still=True)
+    except Exception as e:
+        return None, TEXT[context.scene.language]['texture_save_error'].format(error=str(e))
+
+    # Verify the file exists
+    if not os.path.exists(output_file_path):
+        return None, TEXT[context.scene.language]['texture_save_error'].format(error=f"File not found: {output_file_path}")
+
+    # Load the generated texture
+    try:
+        new_image = bpy.data.images.load(output_file_path)
+        new_image.name = f"{material.name}_{texture_type}.png"
+    except Exception as e:
+        return None, TEXT[context.scene.language]['texture_save_error'].format(error=str(e))
+
+    # Create and link texture node
+    tex_node = nodes.new(type='ShaderNodeTexImage')
+    tex_node.image = new_image
+    tex_node.location = (principled_bsdf.location.x - 200, principled_bsdf.location.y - 200)
+
+    if texture_type == "Normal":
+        normal_map_node = nodes.new(type='ShaderNodeNormalMap')
+        normal_map_node.location = (principled_bsdf.location.x - 100, principled_bsdf.location.y - 200)
+        links.new(tex_node.outputs['Color'], normal_map_node.inputs['Color'])
+        links.new(normal_map_node.outputs['Normal'], principled_bsdf.inputs['Normal'])
+    else:
+        input_key = "Emission Color" if texture_type == "Emission" else texture_type
+        if texture_type == "Subsurface":
+            # Try 'Subsurface' first, then 'Subsurface Weight' for compatibility
+            input_key = "Subsurface" if principled_bsdf.inputs.get("Subsurface") else "Subsurface Weight"
+        elif texture_type == "Specular" and not principled_bsdf.inputs.get('Specular'):
+            # Use 'Specular IOR Level' for Specular textures in newer Blender versions
+            input_key = "Specular IOR Level"
+        
+        # Verify the input exists
+        if not principled_bsdf.inputs.get(input_key):
+            available_inputs = ", ".join(principled_bsdf.inputs.keys())
+            return None, TEXT[context.scene.language]['invalid_input_error'].format(
+                input_key=input_key, available_inputs=available_inputs)
+        
+        links.new(tex_node.outputs['Color'], principled_bsdf.inputs[input_key])
+
+    # Update detected materials flags for this material
+    for item in context.scene.detected_materials:
+        if item.material_name == material.name:
+            if texture_type == "Base Color":
+                item.base_color_detected = True
+            elif texture_type == "Normal":
+                item.normal_detected = True
+            elif texture_type == "Metallic":
+                item.metallic_detected = True
+            elif texture_type == "Roughness":
+                item.roughness_detected = True
+            elif texture_type == "Emission":
+                item.emission_detected = True
+            elif texture_type == "Specular":
+                item.specular_detected = True
+            elif texture_type == "Subsurface":
+                item.sss_detected = True
+            break
+
+    # Refresh material detection to ensure UI updates
+    bpy.ops.object.detect_materials()
+
+    return output_file_path, None
+
+class GenerateTextureOperator(Operator):
+    bl_idname = "wm.generate_texture"
+    bl_label = "Generate Texture"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    material_index: bpy.props.IntProperty()
+    texture_type: bpy.props.StringProperty()
+    material_name: bpy.props.StringProperty()
+
+    def invoke(self, context, event):
+        # Show confirmation dialog
+        return context.window_manager.invoke_props_dialog(self, width=300)
+
+    def draw(self, context):
+        layout = self.layout
+        layout.label(text=TEXT[context.scene.language]['generate_texture_prompt'].format(
+            texture_type=self.texture_type, material_name=self.material_name))
+
+    def execute(self, context):
+        material = bpy.data.materials.get(self.material_name)
+        if not material:
+            self.report({'ERROR'}, f"Material '{self.material_name}' not found.")
+            return {'CANCELLED'}
+
+        # Determine output path
+        model_name = context.scene.model_name
+        dirpath = bpy.path.abspath("//" + sanitize_filename(model_name))
+        os.makedirs(dirpath, exist_ok=True)
+
+        # Generate texture
+        output_path, error = generate_texture(material, self.texture_type, dirpath, context)
+        if error:
+            self.report({'ERROR'}, error)
+            return {'CANCELLED'}
+
+        self.report({'INFO'}, f"Generated {self.texture_type} texture for {self.material_name}")
+        return {'FINISHED'}
 
 class SimpleOperatorPanel(Panel):
     bl_label = "Bakin Model Exporter"
@@ -500,10 +700,25 @@ class SimpleOperatorPanel(Panel):
                 ]:
                     sub_row = row.row(align=True)
                     sub_row.alert = not detected  # Red if not detected
-                    sub_row.enabled = detected  # Greenish (theme default) if detected
+                    sub_row.enabled = True  # Always enabled to allow generating missing textures
                     sub_row.scale_x = 1.2  # Wider for rectangular button
                     sub_row.scale_y = 1.5  # Taller for rectangular button
-                    sub_row.operator("wm.dummy_operator", text=TEXT[scene.language][f'texture_{tex}'])
+                    if detected:
+                        sub_row.operator("wm.dummy_operator", text=TEXT[scene.language][f'texture_{tex}'])
+                    else:
+                        texture_type_map = {
+                            'base': 'Base Color',
+                            'norm': 'Normal',
+                            'met': 'Metallic',
+                            'rough': 'Roughness',
+                            'emis': 'Emission',
+                            'spec': 'Specular',
+                            'sss': 'Subsurface'
+                        }
+                        op = sub_row.operator("wm.generate_texture", text=TEXT[scene.language][f'texture_{tex}'])
+                        op.material_index = i
+                        op.texture_type = texture_type_map[tex]
+                        op.material_name = item.material_name
                 # Settings toggle button
                 row = material_box.row()
                 row.operator(
@@ -542,16 +757,28 @@ class SimpleOperatorPanel(Panel):
                     row = sub_box.row()
                     row.label(text=TEXT[scene.language]['cull_mode'])
                     row.prop(item, "cull_mode", text="")
-                    # Mask map settings
+                    # Separator before Mask Map settings
+                    sub_box.separator()
+                    # Mask Map settings
                     sub_box.prop(item, "use_mask_map", text=TEXT[scene.language]['use_mask_map'])
                     if item.use_mask_map:
-                        sub_box.prop(item, "invert_roughness", text=TEXT[scene.language]['invert_roughness'])
-                        sub_box.prop(item, "invert_metallic", text=TEXT[scene.language]['invert_metallic'])
-                        sub_box.prop(item, "invert_emissive", text=TEXT[scene.language]['invert_emissive'])
-                        sub_box.prop(item, "invert_specular", text=TEXT[scene.language]['invert_specular'])
+                        # Create a row for invert options similar to texture status
+                        row = sub_box.row(align=True)
+                        for prop, text_key in [
+                            ('invert_emissive', 'invert_emissive'),
+                            ('invert_metallic', 'invert_metallic'),
+                            ('invert_roughness', 'invert_roughness'),
+                            ('invert_specular', 'invert_specular')
+                        ]:
+                            sub_row = row.row(align=True)
+                            sub_row.scale_x = 1.2  # Match texture status button width
+                            sub_row.scale_y = 1.5  # Match texture status button height
+                            sub_row.prop(item, prop, text=TEXT[scene.language][text_key], toggle=True)
                     # SSS settings for A_N_RM_SSS_DISCARD shader
                     if item.shader_type == 'a_n_rm_sss_discard 5d7bee168e844ad0bcdca0ea7ff09996':
                         sub_box.prop(item, "sss_coeff", text=TEXT[scene.language]['sss_coeff'])
+                    # Discard threshold setting
+                    sub_box.prop(item, "discard_threshold", text=TEXT[scene.language]['discard_threshold'])
                     sub_box.separator()
                 # Add separator between materials (except for the last one)
                 if i < len(scene.detected_materials) - 1:
@@ -645,10 +872,10 @@ def write_def_file(material, f, mask_map_filename, sss_map_filename, material_it
             metallic_input = principled_bsdf.inputs.get('Metallic')
             if metallic_input and not metallic_input.is_linked:
                 metallic_value = float(metallic_input.default_value)
-            # Specular (try Specular first, then IOR Level)
+            # Specular (try Specular first, then Specular IOR Level)
             specular_input = principled_bsdf.inputs.get('Specular')
             if not specular_input or specular_input.is_linked:
-                specular_input = principled_bsdf.inputs.get('IOR Level')
+                specular_input = principled_bsdf.inputs.get('Specular IOR Level')
             if specular_input and not specular_input.is_linked:
                 specular_value = float(specular_input.default_value)
             # Subsurface
@@ -694,6 +921,7 @@ def write_def_file(material, f, mask_map_filename, sss_map_filename, material_it
     if sss_map_filename:
         f.write(f"SSSMap {sss_map_filename}0001.png\n")
         f.write(f"sss_coeff {float(material_item.sss_coeff):.6f}\n" if material_item else "sss_coeff 1.000000\n")
+    f.write(f"discard_threshold {float(material_item.discard_threshold):.6f}\n" if material_item else "discard_threshold 0.900000\n")
     
     if material.use_nodes:
         for node in material.node_tree.nodes:
@@ -859,6 +1087,13 @@ class DetectedMaterialItem(bpy.types.PropertyGroup):
         min=0.0,
         max=2.0
     )
+    discard_threshold: bpy.props.FloatProperty(
+        name="Discard Threshold",
+        description="Threshold for discarding pixels",
+        default=0.9,
+        min=0.0,
+        max=1.0
+    )
 
 def get_texture_from_node(node, visited_nodes=None):
     """
@@ -907,13 +1142,22 @@ def get_material_textures(material):
             has_principled_bsdf = True
             for key in texture_map.keys():
                 input_socket = principled_bsdf.inputs.get(key)
+                if key == "Emission":
+                    input_socket = principled_bsdf.inputs.get("Emission Color")
                 if input_socket and input_socket.is_linked:
                     from_node = input_socket.links[0].from_node
                     if get_texture_from_node(from_node):
                         texture_map[key] = True
-                # Special case for Specular (also check IOR Level)
+                # Special case for Specular (also check Specular IOR Level)
                 if key == "Specular" and not texture_map[key]:
-                    input_socket = principled_bsdf.inputs.get('IOR Level')
+                    input_socket = principled_bsdf.inputs.get('Specular IOR Level')
+                    if input_socket and input_socket.is_linked:
+                        from_node = input_socket.links[0].from_node
+                        if get_texture_from_node(from_node):
+                            texture_map[key] = True
+                # Special case for Subsurface (also check Subsurface Weight)
+                if key == "Subsurface" and not texture_map[key]:
+                    input_socket = principled_bsdf.inputs.get('Subsurface Weight')
                     if input_socket and input_socket.is_linked:
                         from_node = input_socket.links[0].from_node
                         if get_texture_from_node(from_node):
@@ -986,6 +1230,7 @@ def register():
     bpy.utils.register_class(DetectedMaterialItem)
     bpy.types.Scene.detected_materials = bpy.props.CollectionProperty(type=DetectedMaterialItem)
     bpy.utils.register_class(DetectMaterialsOperator)
+    bpy.utils.register_class(GenerateTextureOperator)
 
 def unregister():
     del bpy.types.Scene.model_name
@@ -995,6 +1240,7 @@ def unregister():
     del bpy.types.Scene.detected_materials
     bpy.utils.unregister_class(DetectedMaterialItem)
     bpy.utils.unregister_class(DetectMaterialsOperator)
+    bpy.utils.unregister_class(GenerateTextureOperator)
     bpy.utils.unregister_class(ToggleSettingsOperator)
     bpy.utils.unregister_class(DummyOperator)
     bpy.utils.unregister_class(SimpleOperatorPanel)
