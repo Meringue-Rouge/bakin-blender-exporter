@@ -1,11 +1,11 @@
 bl_info = {
     "name": "Bakin Model Exporter",
-    "author": "ingenoire",
-    "version": (1, 7),
+    "author": "Meringue Rouge",
+    "version": (2, 0),
     "blender": (2, 80, 0),
     "location": "View3D > Sidebar > Bakin Model Exporter Tab",
     "description": (
-        "BAKIN EN/JP: Exports Model files for Bakin."
+        "BAKIN EN/JP: Exports Model files for RPG Developer Bakin. Scan textures detected, assign Bakin specific material flags, and generate Mask Maps and other maps from the Albedo file."
     ),
     "category": "3D View",
 }
