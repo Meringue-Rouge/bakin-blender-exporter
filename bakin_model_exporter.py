@@ -62,7 +62,9 @@ TEXT = {
         'generate_texture_prompt': "Generate a {texture_type} texture for material '{material_name}'?",
         'no_albedo_error': "Cannot generate texture: Albedo (Base Color) texture is missing!",
         'texture_save_error': "Failed to save texture: {error}",
-        'invalid_input_error': "Cannot link texture: Input '{input_key}' not found on Principled BSDF node. Available inputs: {available_inputs}"
+        'invalid_input_error': "Cannot link texture: Input '{input_key}' not found on Principled BSDF node. Available inputs: {available_inputs}",
+        'triangulation_warning': "Model is not fully triangulated! Bakin requires triangulated meshes.",
+        'triangulate_button': "Triangulate Meshes"
     },
     'jp': {
         'model_name': "モデル名",
@@ -107,7 +109,9 @@ TEXT = {
         'generate_texture_prompt': "マテリアル '{material_name}' の {texture_type} テクスチャを生成しますか？",
         'no_albedo_error': "テクスチャを生成できません：アルベド（ベースカラー）テクスチャがありません！",
         'texture_save_error': "テクスチャの保存に失敗しました：{error}",
-        'invalid_input_error': "テクスチャをリンクできません：Principled BSDF ノードに '{input_key}' 入力が見つかりません。利用可能な入力：{available_inputs}"
+        'invalid_input_error': "テクスチャをリンクできません：Principled BSDF ノードに '{input_key}' 入力が見つかりません。利用可能な入力：{available_inputs}",
+        'triangulation_warning': "モデルが完全に三角形化されていません！Bakinでは三角形化されたメッシュが必要です。",
+        'triangulate_button': "メッシュを三角形化"
     },
     'zh': {
         'model_name': "模型名称",
@@ -152,7 +156,9 @@ TEXT = {
         'generate_texture_prompt': "为材质 '{material_name}' 生成{texture_type}贴图？",
         'no_albedo_error': "无法生成贴图：缺少反照率（基础颜色）贴图！",
         'texture_save_error': "保存贴图失败：{error}",
-        'invalid_input_error': "无法链接贴图：Principled BSDF 节点上未找到输入 '{input_key}'。可用输入：{available_inputs}"
+        'invalid_input_error': "无法链接贴图：Principled BSDF 节点上未找到输入 '{input_key}'。可用输入：{available_inputs}",
+        'triangulation_warning': "模型未完全三角化！Bakin需要三角化的网格。",
+        'triangulate_button': "三角化网格"
     }
 }
 
@@ -184,6 +190,42 @@ CULL_MODE_OPTIONS = [
     ('none', "Double Sided", "No culling, double-sided rendering"),
     ('double', "Invisible", "Invisible rendering")
 ]
+
+def check_model_triangulation(context):
+    """Check if all mesh objects in the scene are fully triangulated."""
+    for obj in context.scene.objects:
+        if obj.type == 'MESH' and obj.data.polygons:
+            # Evaluate the mesh with modifiers applied
+            depsgraph = context.evaluated_depsgraph_get()
+            eval_obj = obj.evaluated_get(depsgraph)
+            mesh = eval_obj.data
+            # Check if any polygon is not a triangle (has != 3 vertices)
+            for poly in mesh.polygons:
+                if len(poly.vertices) != 3:
+                    return False
+    return True
+
+class TriangulateMeshesOperator(Operator):
+    bl_idname = "object.triangulate_meshes"
+    bl_label = "Triangulate Meshes"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    def execute(self, context):
+        # Iterate through all mesh objects
+        for obj in context.scene.objects:
+            if obj.type == 'MESH' and obj.data.polygons:
+                # Check if a Triangulate Modifier already exists
+                has_triangulate = any(mod.type == 'TRIANGULATE' for mod in obj.modifiers)
+                if not has_triangulate:
+                    # Add Triangulate Modifier with specific settings
+                    mod = obj.modifiers.new(name="Triangulate", type='TRIANGULATE')
+                    mod.keep_custom_normals = True
+                    mod.quad_method = 'BEAUTY'
+
+        # Update triangulation status
+        context.scene.is_model_triangulated = check_model_triangulation(context)
+        self.report({'INFO'}, "Triangulate Modifiers added to all meshes.")
+        return {'FINISHED'}
 
 class ExportFBXOperator(Operator):
     bl_idname = "object.export_fbx_def"
@@ -673,6 +715,12 @@ class SimpleOperatorPanel(Panel):
         layout.label(text=TEXT[scene.language]['model_name'], icon="LINE_DATA")
         layout.prop(scene, "model_name")
         layout.separator()
+
+        # Triangulation check
+        if not scene.is_model_triangulated:
+            layout.label(text=TEXT[scene.language]['triangulation_warning'], icon='ERROR')
+            layout.operator("object.triangulate_meshes", text=TEXT[scene.language]['triangulate_button'], icon='MESH_DATA')
+            layout.separator()
         
         # Material Config Section
         layout.label(text=TEXT[scene.language]['material_config'], icon="MATERIAL")
@@ -1198,6 +1246,9 @@ class DetectMaterialsOperator(bpy.types.Operator):
             item.shader_type = getattr(material, 'bakin_shader_type', SHADER_OPTIONS[0][0])
             material.bakin_shader_type = item.shader_type
 
+        # Update triangulation status
+        context.scene.is_model_triangulated = check_model_triangulation(context)
+        
         return {'FINISHED'}
 
 def register():
@@ -1216,6 +1267,11 @@ def register():
         description="Tracks if Material Config has been run.",
         default=False
     )
+    bpy.types.Scene.is_model_triangulated = bpy.props.BoolProperty(
+        name="Is Model Triangulated",
+        description="Tracks if all meshes in the scene are triangulated.",
+        default=True
+    )
     bpy.types.Material.bakin_shader_type = bpy.props.EnumProperty(
         name="Shader Type",
         description="Select the shader for export",
@@ -1231,16 +1287,19 @@ def register():
     bpy.types.Scene.detected_materials = bpy.props.CollectionProperty(type=DetectedMaterialItem)
     bpy.utils.register_class(DetectMaterialsOperator)
     bpy.utils.register_class(GenerateTextureOperator)
+    bpy.utils.register_class(TriangulateMeshesOperator)
 
 def unregister():
     del bpy.types.Scene.model_name
     del bpy.types.Scene.language
     del bpy.types.Scene.material_config_run
+    del bpy.types.Scene.is_model_triangulated
     del bpy.types.Material.bakin_shader_type
     del bpy.types.Scene.detected_materials
     bpy.utils.unregister_class(DetectedMaterialItem)
     bpy.utils.unregister_class(DetectMaterialsOperator)
     bpy.utils.unregister_class(GenerateTextureOperator)
+    bpy.utils.unregister_class(TriangulateMeshesOperator)
     bpy.utils.unregister_class(ToggleSettingsOperator)
     bpy.utils.unregister_class(DummyOperator)
     bpy.utils.unregister_class(SimpleOperatorPanel)
