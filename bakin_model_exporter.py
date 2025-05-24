@@ -1,7 +1,7 @@
 bl_info = {
     "name": "Bakin Model Exporter",
     "author": "ingenoire",
-    "version": (1, 5),
+    "version": (1, 7),
     "blender": (2, 80, 0),
     "location": "View3D > Sidebar > Bakin Model Exporter Tab",
     "description": (
@@ -48,12 +48,14 @@ TEXT = {
         'invert_metallic': "Invert Metallic",
         'invert_emissive': "Invert Emissive",
         'invert_specular': "Invert Specular",
+        'sss_coeff': "SSS Coeff",
         'texture_base': "Base",
         'texture_norm': "Norm",
         'texture_met': "Met",
         'texture_rough': "Rough",
         'texture_emis': "Emis",
         'texture_spec': "Spec",
+        'texture_sss': "SSS",
         'settings_toggle': "Settings"
     },
     'jp': {
@@ -85,12 +87,14 @@ TEXT = {
         'invert_metallic': "メタリック反転",
         'invert_emissive': "エミッシブ反転",
         'invert_specular': "スペキュラ反転",
+        'sss_coeff': "SSS係数",
         'texture_base': "ベース",
         'texture_norm': "ノーマル",
         'texture_met': "メタリック",
         'texture_rough': "ラフネス",
         'texture_emis': "エミッシブ",
         'texture_spec': "スペキュラー",
+        'texture_sss': "SSS",
         'settings_toggle': "設定"
     },
     'zh': {
@@ -122,12 +126,14 @@ TEXT = {
         'invert_metallic': "反转金属度",
         'invert_emissive': "反转自发光",
         'invert_specular': "反转高光",
+        'sss_coeff': "SSS系数",
         'texture_base': "基础",
         'texture_norm': "法线",
         'texture_met': "金属",
         'texture_rough': "粗糙",
         'texture_emis': "自发光",
         'texture_spec': "高光",
+        'texture_sss': "SSS",
         'settings_toggle': "设置"
     }
 }
@@ -140,13 +146,15 @@ texture_dict = {
     'NormalMap': "NormalMap",
     'EmiMap': "EmiMap",
     'MCMap': "MCMap",
-    'outlineWeight': "outlineWeight"
+    'outlineWeight': "outlineWeight",
+    'Subsurface': "SSSMap"
 }
 
 # Shader options for the dropdown
 SHADER_OPTIONS = [
     ('a_n_rm 542d323fb6604f468eb8fd99b29502d8', "A_N_RM", "Default shader"),
-    ('a_n_rm_discard 0d973c7e0eaf4bf2b1b8470c15571799', "A_N_RM_DISCARD", "Discard shader")
+    ('a_n_rm_discard 0d973c7e0eaf4bf2b1b8470c15571799', "A_N_RM_DISCARD", "Discard shader"),
+    ('a_n_rm_sss_discard 5d7bee168e844ad0bcdca0ea7ff09996', "A_N_RM_SSS_DISCARD", "SSS Discard shader")
 ]
 
 # Cull mode options for the dropdown
@@ -200,14 +208,19 @@ class ExportFBXOperator(Operator):
                                         material_item = item
                                         break
                                 mask_map_path = None
+                                sss_map_path = None
                                 if material_item and material_item.use_mask_map:
                                     mask_map_path = generate_unity_mask_map(material, dirpath, material_item)
-                                if mask_map_path:
-                                    filename = sanitize_filename(os.path.basename(mask_map_path))
-                                    print(f"Generated mask map: {filename}")
-                                    write_def_file(material, f, filename)
+                                if material_item and material_item.shader_type == 'a_n_rm_sss_discard 5d7bee168e844ad0bcdca0ea7ff09996':
+                                    sss_map_path = generate_sss_map(material, dirpath, material_item)
+                                if mask_map_path or sss_map_path:
+                                    filename = sanitize_filename(os.path.basename(mask_map_path)) if mask_map_path else None
+                                    sss_filename = sanitize_filename(os.path.basename(sss_map_path)) if sss_map_path else None
+                                    print(f"Generated mask map: {filename}" if mask_map_path else "")
+                                    print(f"Generated SSS map: {sss_filename}" if sss_map_path else "")
+                                    write_def_file(material, f, filename, sss_filename, material_item)
                                 else:
-                                    write_def_file(material, f, None)
+                                    write_def_file(material, f, None, None, material_item)
 
         except Exception as e:
             self.report({'ERROR'}, str(e))
@@ -367,6 +380,77 @@ def generate_unity_mask_map(material, output_path, material_item):
 
     return output_filename
 
+def generate_sss_map(material, output_path, material_item):
+    if not material.use_nodes:
+        print(f"Material '{material.name}' does not use nodes.")
+        return None
+
+    node_tree = material.node_tree
+    nodes = node_tree.nodes
+
+    # Find the Principled BSDF node
+    principled_bsdf = None
+    for node in nodes:
+        if node.type == 'BSDF_PRINCIPLED':
+            principled_bsdf = node
+            break
+
+    if not principled_bsdf:
+        print(f"No Principled BSDF shader found in material '{material.name}'.")
+        return None
+
+    # Function to safely get the image from a node
+    def get_image_from_node(input_socket):
+        if input_socket and input_socket.is_linked:
+            link = input_socket.links[0]
+            if link.from_node and link.from_node.type == 'TEX_IMAGE':
+                return link.from_node.image
+        return None
+
+    # Get connected Base Color texture
+    base_color_tex_image = get_image_from_node(principled_bsdf.inputs.get('Base Color', None))
+
+    # If no Base Color texture, create a dummy image
+    if not base_color_tex_image:
+        width, height = 1024, 1024
+        base_color_tex_image = create_dummy_image(f"{material.name}_SSS_dummy", width, height)
+
+    # Set up compositing
+    comp_scene = bpy.context.scene
+    comp_scene.use_nodes = True
+
+    comp_tree = comp_scene.node_tree
+    comp_nodes = comp_tree.nodes
+    comp_links = comp_tree.links
+
+    # Clear existing nodes
+    for node in comp_nodes:
+        comp_nodes.remove(node)
+
+    # Add Image node
+    base_color_node = comp_nodes.new(type='CompositorNodeImage')
+    base_color_node.image = base_color_tex_image
+
+    # Add RGB to BW node to convert to grayscale
+    rgb_to_bw_node = comp_nodes.new(type='CompositorNodeRGBToBW')
+
+    # Add Output File node
+    output_filename = f"{sanitize_filename(bpy.context.scene.model_name)}_SSSMap"
+    output_node = comp_nodes.new(type='CompositorNodeOutputFile')
+    output_node.base_path = output_path
+    output_node.file_slots[0].path = output_filename
+
+    # Connect nodes: Base Color -> RGB to BW -> Output
+    comp_links.new(base_color_node.outputs['Image'], rgb_to_bw_node.inputs['Image'])
+    comp_links.new(rgb_to_bw_node.outputs['Val'], output_node.inputs['Image'])
+
+    # Render the scene to create the grayscale image
+    output_file_path = os.path.join(output_path, f"{output_filename}.png")
+    bpy.context.scene.render.filepath = output_file_path
+    bpy.ops.render.render(write_still=True)
+
+    return output_filename
+
 class SimpleOperatorPanel(Panel):
     bl_label = "Bakin Model Exporter"
     bl_idname = "OBJECT_PT_my_simple_operator"
@@ -411,7 +495,8 @@ class SimpleOperatorPanel(Panel):
                     ('met', item.metallic_detected),
                     ('rough', item.roughness_detected),
                     ('emis', item.emission_detected),
-                    ('spec', item.specular_detected)
+                    ('spec', item.specular_detected),
+                    ('sss', item.sss_detected)
                 ]:
                     sub_row = row.row(align=True)
                     sub_row.alert = not detected  # Red if not detected
@@ -464,6 +549,9 @@ class SimpleOperatorPanel(Panel):
                         sub_box.prop(item, "invert_metallic", text=TEXT[scene.language]['invert_metallic'])
                         sub_box.prop(item, "invert_emissive", text=TEXT[scene.language]['invert_emissive'])
                         sub_box.prop(item, "invert_specular", text=TEXT[scene.language]['invert_specular'])
+                    # SSS settings for A_N_RM_SSS_DISCARD shader
+                    if item.shader_type == 'a_n_rm_sss_discard 5d7bee168e844ad0bcdca0ea7ff09996':
+                        sub_box.prop(item, "sss_coeff", text=TEXT[scene.language]['sss_coeff'])
                     sub_box.separator()
                 # Add separator between materials (except for the last one)
                 if i < len(scene.detected_materials) - 1:
@@ -524,7 +612,7 @@ def sanitize_filename(filename):
 def sanitize_material_name(name):
     return re.sub(r'\W+', '_', unicodedata.normalize('NFKD', name).encode('ASCII', 'ignore').decode('ASCII'))
 
-def write_def_file(material, f, mask_map_filename):
+def write_def_file(material, f, mask_map_filename, sss_map_filename, material_item):
     sanitized_material_name = sanitize_material_name(material.name)
     f.write(f"mtl {sanitized_material_name}\n")
     # Use the material's bakin_shader_type, default to A_N_RM if not set
@@ -535,9 +623,10 @@ def write_def_file(material, f, mask_map_filename):
     roughness_value = 1.000000
     metallic_value = 1.000000
     specular_value = 1.000000
+    sss_value = 1.000000
     
     # Find the corresponding DetectedMaterialItem for this material
-    material_item = None
+    material_item = material_item or None
     for item in bpy.context.scene.detected_materials:
         if item.material_name == material.name:
             material_item = item
@@ -562,6 +651,10 @@ def write_def_file(material, f, mask_map_filename):
                 specular_input = principled_bsdf.inputs.get('IOR Level')
             if specular_input and not specular_input.is_linked:
                 specular_value = float(specular_input.default_value)
+            # Subsurface
+            sss_input = principled_bsdf.inputs.get('Subsurface')
+            if sss_input and not sss_input.is_linked:
+                sss_value = float(sss_input.default_value)
 
     # Write all lines after shader, using retrieved values
     f.write(f"emissiveBlink {str(material_item.emissiveBlink).lower()}\n" if material_item else "emissiveBlink false\n")
@@ -598,6 +691,9 @@ def write_def_file(material, f, mask_map_filename):
     f.write("RenderingType Cutoff\n")
     if mask_map_filename:
         f.write(f"RMMap {mask_map_filename}0001.png\n")
+    if sss_map_filename:
+        f.write(f"SSSMap {sss_map_filename}0001.png\n")
+        f.write(f"sss_coeff {float(material_item.sss_coeff):.6f}\n" if material_item else "sss_coeff 1.000000\n")
     
     if material.use_nodes:
         for node in material.node_tree.nodes:
@@ -650,6 +746,7 @@ class DetectedMaterialItem(bpy.types.PropertyGroup):
     roughness_detected: bpy.props.BoolProperty(name="Roughness Detected", default=False)
     emission_detected: bpy.props.BoolProperty(name="Emission Detected", default=False)
     specular_detected: bpy.props.BoolProperty(name="Specular Detected", default=False)
+    sss_detected: bpy.props.BoolProperty(name="SSS Detected", default=False)
     shader_type: bpy.props.EnumProperty(
         name="Shader Type",
         description="Select the shader for export",
@@ -755,6 +852,13 @@ class DetectedMaterialItem(bpy.types.PropertyGroup):
         description="Invert the Specular texture",
         default=False
     )
+    sss_coeff: bpy.props.FloatProperty(
+        name="SSS Coeff",
+        description="Subsurface scattering coefficient",
+        default=1.0,
+        min=0.0,
+        max=2.0
+    )
 
 def get_texture_from_node(node, visited_nodes=None):
     """
@@ -792,6 +896,7 @@ def get_material_textures(material):
         "Specular": False,
         "Metallic": False,
         "Roughness": False,
+        "Subsurface": False
     }
     has_principled_bsdf = False
 
@@ -844,6 +949,7 @@ class DetectMaterialsOperator(bpy.types.Operator):
             item.roughness_detected = texture_map["Roughness"]
             item.emission_detected = texture_map["Emission"]
             item.specular_detected = texture_map["Specular"]
+            item.sss_detected = texture_map["Subsurface"]
             # Sync shader_type with material's bakin_shader_type
             item.shader_type = getattr(material, 'bakin_shader_type', SHADER_OPTIONS[0][0])
             material.bakin_shader_type = item.shader_type
