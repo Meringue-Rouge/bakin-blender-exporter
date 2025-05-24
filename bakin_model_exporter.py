@@ -1,7 +1,7 @@
 bl_info = {
     "name": "Bakin Model Exporter",
     "author": "Meringue Rouge",
-    "version": (2, 0),
+    "version": (2, 1),
     "blender": (2, 80, 0),
     "location": "View3D > Sidebar > Bakin Model Exporter Tab",
     "description": (
@@ -894,11 +894,12 @@ def write_def_file(material, f, mask_map_filename, sss_map_filename, material_it
     shader = getattr(material, 'bakin_shader_type', SHADER_OPTIONS[0][0])
     f.write(f"shader {shader}\n")
     
-    # Initialize default values for roughness, metallic, and specular
+    # Initialize default values for roughness, metallic, specular, and color
     roughness_value = 1.000000
     metallic_value = 1.000000
     specular_value = 1.000000
     sss_value = 1.000000
+    color_value = [1.0, 0.0, 0.0]  # Default color (RGB)
     
     # Find the corresponding DetectedMaterialItem for this material
     material_item = material_item or None
@@ -930,6 +931,10 @@ def write_def_file(material, f, mask_map_filename, sss_map_filename, material_it
             sss_input = principled_bsdf.inputs.get('Subsurface')
             if sss_input and not sss_input.is_linked:
                 sss_value = float(sss_input.default_value)
+            # Base Color for the 'color' field
+            base_color_input = principled_bsdf.inputs.get('Base Color')
+            if base_color_input and not base_color_input.is_linked:
+                color_value = base_color_input.default_value[:3]  # Get RGB only (ignore alpha)
 
     # Write all lines after shader, using retrieved values
     f.write(f"emissiveBlink {str(material_item.emissiveBlink).lower()}\n" if material_item else "emissiveBlink false\n")
@@ -956,7 +961,8 @@ def write_def_file(material, f, mask_map_filename, sss_map_filename, material_it
     f.write("distanceFade false\n")
     f.write("uvofs 0.000000 0.000000\n")
     f.write("uvscl 1.000000 1.000000\n")
-    f.write("color 1.000000 0.000000 0.000000\n")
+    # Write the color field using the Base Color from Principled BSDF
+    f.write(f"color {float(color_value[0]):.6f} {float(color_value[1]):.6f} {float(color_value[2]):.6f}\n")
     f.write("normalscl 1.000000\n")
     f.write(f"roughness {float(roughness_value):.6f}\n")
     f.write(f"metallic {float(metallic_value):.6f}\n")
@@ -984,9 +990,9 @@ def write_def_file(material, f, mask_map_filename, sss_map_filename, material_it
                                     if input.name in texture_dict:
                                         f.write(f"{texture_dict[input.name]} {filename}\n")
     
-    # Handle LitColor with fallback
-    diffuse_color = material.diffuse_color if hasattr(material, 'diffuse_color') else (1.0, 1.0, 1.0, 1.0)
-    f.write(f"LitColor {float(diffuse_color[0]):.6f} {float(diffuse_color[1]):.6f} {float(diffuse_color[2]):.6f} 1.000000\n")
+    # Handle LitColor with Principled BSDF Base Color
+    base_color = color_value  # Use the same color_value for consistency
+    f.write(f"LitColor {float(base_color[0]):.6f} {float(base_color[1]):.6f} {float(base_color[2]):.6f} 1.000000\n")
     f.write("ShadeColor 0.600000 0.600000 0.600000 1.000000\n")
     f.write("toony 0.900000\n")
     f.write("shift 0.000000\n")
