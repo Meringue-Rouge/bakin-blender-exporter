@@ -1,7 +1,7 @@
 bl_info = {
     "name": "Bakin Model Exporter",
     "author": "Meringue Rouge",
-    "version": (2, 1),
+    "version": (2, 2),
     "blender": (2, 80, 0),
     "location": "View3D > Sidebar > Bakin Model Exporter Tab",
     "description": (
@@ -317,6 +317,10 @@ def create_dummy_image(name, width, height):
     return dummy_image
 
 def generate_unity_mask_map(material, output_path, material_item):
+    """
+    Generate a Unity mask map (R=Emissive, G=Roughness, B=Metallic, A=Specular) for the material.
+    Returns the filename of the generated mask map (without 0001 suffix) or None if generation fails.
+    """
     if not material.use_nodes:
         print(f"Material '{material.name}' does not use nodes.")
         return None
@@ -339,7 +343,7 @@ def generate_unity_mask_map(material, output_path, material_item):
     def get_image_from_node(input_socket):
         if input_socket and input_socket.is_linked:
             link = input_socket.links[0]
-            if link.from_node and link.from_node.type == 'TEX_IMAGE':
+            if link.from_node and link.from_node.type == 'TEX_IMAGE' and link.from_node.image:
                 return link.from_node.image
         return None
 
@@ -347,17 +351,14 @@ def generate_unity_mask_map(material, output_path, material_item):
     metallic_tex_image = get_image_from_node(principled_bsdf.inputs.get('Metallic', None))
     roughness_tex_image = get_image_from_node(principled_bsdf.inputs.get('Roughness', None))
     emissive_tex_image = get_image_from_node(principled_bsdf.inputs.get('Emission Color', None))
-    specular_tex_image = get_image_from_node(principled_bsdf.inputs.get('Specular', None))
-    
-    if specular_tex_image is None:
-        specular_tex_image = get_image_from_node(principled_bsdf.inputs.get('Specular IOR Level', None))
+    specular_tex_image = get_image_from_node(principled_bsdf.inputs.get('Specular IOR Level', None))
 
     # Check if any textures exist for the mask map
     if not any([metallic_tex_image, roughness_tex_image, emissive_tex_image, specular_tex_image]):
         print(f"No relevant textures found for mask map in material '{material.name}'.")
         return None
 
-    # Default size if no textures are found (though we already checked)
+    # Default size if no textures are found
     width, height = 1024, 1024
     if metallic_tex_image:
         width, height = metallic_tex_image.size
@@ -389,58 +390,74 @@ def generate_unity_mask_map(material, output_path, material_item):
 
     emissive_node = comp_nodes.new(type='CompositorNodeImage')
     emissive_node.image = emissive_tex_image
-    
+
+    specular_node = comp_nodes.new(type='CompositorNodeImage')
+    specular_node.image = specular_tex_image
+
     # Add Invert nodes
     invert_node_e = comp_nodes.new(type='CompositorNodeInvert')
     invert_node_m = comp_nodes.new(type='CompositorNodeInvert')
     invert_node_r = comp_nodes.new(type='CompositorNodeInvert')
     invert_node_s = comp_nodes.new(type='CompositorNodeInvert')
 
-    specular_node = comp_nodes.new(type='CompositorNodeImage')
-    specular_node.image = specular_tex_image
-
     # Add Combine RGBA node
     combine_node = comp_nodes.new(type='CompositorNodeCombRGBA')
 
     # Add Output File node
-    output_filename = f"{sanitize_filename(bpy.context.scene.model_name)}_MaskMap"
+    output_filename = f"{sanitize_filename(material.name)}_maskmap"
     output_node = comp_nodes.new(type='CompositorNodeOutputFile')
     output_node.base_path = output_path
-    output_node.file_slots[0].path = output_filename
+    output_node.file_slots[0].path = output_filename  # Let Blender append 0001
 
-    # Use material-specific invert settings
-    if roughness_tex_image and material_item.invert_roughness:
-        comp_links.new(roughness_node.outputs['Image'], invert_node_r.inputs['Color'])
-        comp_links.new(invert_node_r.outputs['Color'], combine_node.inputs['G'])
-    elif roughness_tex_image:
-        comp_links.new(roughness_node.outputs['Image'], combine_node.inputs['G'])
+    # Connect nodes based on invert settings
+    if roughness_tex_image:
+        if material_item.invert_roughness:
+            comp_links.new(roughness_node.outputs['Image'], invert_node_r.inputs['Color'])
+            comp_links.new(invert_node_r.outputs['Color'], combine_node.inputs['G'])
+        else:
+            comp_links.new(roughness_node.outputs['Image'], combine_node.inputs['G'])
 
-    if metallic_tex_image and material_item.invert_metallic:
-        comp_links.new(metallic_node.outputs['Image'], invert_node_m.inputs['Color'])
-        comp_links.new(invert_node_m.outputs['Color'], combine_node.inputs['B'])
-    elif metallic_tex_image:
-        comp_links.new(metallic_node.outputs['Image'], combine_node.inputs['B'])
+    if metallic_tex_image:
+        if material_item.invert_metallic:
+            comp_links.new(metallic_node.outputs['Image'], invert_node_m.inputs['Color'])
+            comp_links.new(invert_node_m.outputs['Color'], combine_node.inputs['B'])
+        else:
+            comp_links.new(metallic_node.outputs['Image'], combine_node.inputs['B'])
 
-    if emissive_tex_image and material_item.invert_emissive:
-        comp_links.new(emissive_node.outputs['Image'], invert_node_e.inputs['Color'])
-        comp_links.new(invert_node_e.outputs['Color'], combine_node.inputs['R'])
-    elif emissive_tex_image:
-        comp_links.new(emissive_node.outputs['Image'], combine_node.inputs['R'])
+    if emissive_tex_image:
+        if material_item.invert_emissive:
+            comp_links.new(emissive_node.outputs['Image'], invert_node_e.inputs['Color'])
+            comp_links.new(invert_node_e.outputs['Color'], combine_node.inputs['R'])
+        else:
+            comp_links.new(emissive_node.outputs['Image'], combine_node.inputs['R'])
 
-    if specular_tex_image and material_item.invert_specular:
-        comp_links.new(specular_node.outputs['Image'], invert_node_s.inputs['Color'])
-        comp_links.new(invert_node_s.outputs['Color'], combine_node.inputs['A'])
-    elif specular_tex_image:
-        comp_links.new(specular_node.outputs['Image'], combine_node.inputs['A'])
-    
+    if specular_tex_image:
+        if material_item.invert_specular:
+            comp_links.new(specular_node.outputs['Image'], invert_node_s.inputs['Color'])
+            comp_links.new(invert_node_s.outputs['Color'], combine_node.inputs['A'])
+        else:
+            comp_links.new(specular_node.outputs['Image'], combine_node.inputs['A'])
+
     comp_links.new(combine_node.outputs['Image'], output_node.inputs['Image'])
 
     # Render the scene to create the image
-    output_file_path = os.path.join(output_path, f"{output_filename}.png")
-    bpy.context.scene.render.filepath = output_file_path
-    bpy.ops.render.render(write_still=True)
+    output_file_path = os.path.join(output_path, f"{output_filename}0001.png")
+    try:
+        comp_scene.render.filepath = output_file_path
+        comp_scene.render.image_settings.file_format = 'PNG'
+        comp_scene.render.use_file_extension = True
+        bpy.ops.render.render(write_still=True)
+    except Exception as e:
+        print(f"Failed to render mask map for material '{material.name}': {str(e)}")
+        return None
 
-    return output_filename
+    if not os.path.exists(output_file_path):
+        print(f"Mask map file not created for material '{material.name}' at {output_file_path}")
+        return None
+
+    print(f"Generated mask map for material '{material.name}' at {output_file_path}")
+    return output_filename  # Return filename without 0001 for DEF file
+
 
 def generate_sss_map(material, output_path, material_item):
     if not material.use_nodes:
@@ -890,92 +907,90 @@ def sanitize_material_name(name):
 def write_def_file(material, f, mask_map_filename, sss_map_filename, material_item):
     sanitized_material_name = sanitize_material_name(material.name)
     f.write(f"mtl {sanitized_material_name}\n")
-    # Use the material's bakin_shader_type, default to A_N_RM if not set
     shader = getattr(material, 'bakin_shader_type', SHADER_OPTIONS[0][0])
     f.write(f"shader {shader}\n")
     
-    # Initialize default values for roughness, metallic, specular, and color
-    roughness_value = 1.000000
-    metallic_value = 1.000000
-    specular_value = 1.000000
-    sss_value = 1.000000
-    color_value = [1.0, 0.0, 0.0]  # Default color (RGB)
+    roughness_value = 1.0
+    metallic_value = 1.0
+    specular_value = 1.0
+    sss_value = 0.0
     
-    # Find the corresponding DetectedMaterialItem for this material
     material_item = material_item or None
     for item in bpy.context.scene.detected_materials:
         if item.material_name == material.name:
             material_item = item
             break
     
-    # Check for Principled BSDF node to get values
     if material.use_nodes and material.node_tree:
         nodes = material.node_tree.nodes
         principled_bsdf = next((node for node in nodes if node.type == 'BSDF_PRINCIPLED'), None)
         if principled_bsdf:
-            # Roughness
             roughness_input = principled_bsdf.inputs.get('Roughness')
             if roughness_input and not roughness_input.is_linked:
                 roughness_value = float(roughness_input.default_value)
-            # Metallic
             metallic_input = principled_bsdf.inputs.get('Metallic')
-            if metallic_input and not metallic_input.is_linked:
+            if metallic_input and not roughness_input.is_linked:
                 metallic_value = float(metallic_input.default_value)
-            # Specular (try Specular first, then Specular IOR Level)
             specular_input = principled_bsdf.inputs.get('Specular')
             if not specular_input or specular_input.is_linked:
-                specular_input = principled_bsdf.inputs.get('Specular IOR Level')
+                specular_input = principled_bsdf.inputs.get('Specular IOR_Level')
             if specular_input and not specular_input.is_linked:
                 specular_value = float(specular_input.default_value)
-            # Subsurface
             sss_input = principled_bsdf.inputs.get('Subsurface')
             if sss_input and not sss_input.is_linked:
                 sss_value = float(sss_input.default_value)
-            # Base Color for the 'color' field
-            base_color_input = principled_bsdf.inputs.get('Base Color')
-            if base_color_input and not base_color_input.is_linked:
-                color_value = base_color_input.default_value[:3]  # Get RGB only (ignore alpha)
-
-    # Write all lines after shader, using retrieved values
+    
     f.write(f"emissiveBlink {str(material_item.emissiveBlink).lower()}\n" if material_item else "emissiveBlink false\n")
-    f.write(f"emissiveBlinkSpeed {float(material_item.emissiveBlinkSpeed):.6f}\n" if material_item else "emissiveBlinkSpeed 0.000000\n")
-    f.write(f"emissiveLinkBuildingLight {str(material_item.emissiveLinkBuildingLight).lower()}\n" if material_item else "emissiveLinkBuildingLight false\n")
+    f.write(f"emissiveBlinkSpeed {float(material_item.emissiveBlinkSpeed):.6f}\n" if material_item else "emmissiveBlinkSpeed 0.0\n")
+    f.write(f"emissiveLinkBuildingLight {str(material_item.emissiveLinkBuildingLight).lower()}\n" if material_item else "emmissiveLinkBuildingLight false\n")
     f.write(f"uscrollanim {str(material_item.uscrollanim).lower()}\n" if material_item else "uscrollanim false\n")
     f.write(f"vscrollanim {str(material_item.vscrollanim).lower()}\n" if material_item else "vscrollanim false\n")
     scrollanimspeed = material_item.scrollanimspeed if material_item else [0.0, 0.0]
     f.write(f"scrollanimspeed {float(scrollanimspeed[0]):.6f} {float(scrollanimspeed[1]):.6f}\n")
     f.write("uvstepanim false\n")
-    f.write("uvstepanimparam 1 1 0 1.000000\n")
+    f.write("uvstepanimparam 1 1 0 1.0\n")
     f.write("uvstepanim_modeluvorigin false\n")
     f.write("sortindex 0\n")
     f.write(f"castshadow {str(material_item.castshadow).lower()}\n" if material_item else "castshadow true\n")
     f.write(f"receivedecal {str(material_item.receivedecal).lower()}\n" if material_item else "receivedecal false\n")
     f.write(f"cull {material_item.cull_mode}\n" if material_item else "cull back\n")
     f.write(f"drawOutline {str(material_item.drawOutline).lower()}\n" if material_item else "drawOutline false\n")
-    # Use outlineWidth and outlineColor from material_item if available
     outline_width = material_item.outlineWidth if material_item else 0.0
     outline_color = material_item.outlineColor if material_item else [0.0, 0.0, 0.0, 1.0]
     f.write(f"outlineWidth {float(outline_width):.6f}\n")
     f.write(f"outlineColor {float(outline_color[0]):.6f} {float(outline_color[1]):.6f} {float(outline_color[2]):.6f} {float(outline_color[3]):.6f}\n")
     f.write("overrideOutlineSetting false\n")
     f.write("distanceFade false\n")
-    f.write("uvofs 0.000000 0.000000\n")
-    f.write("uvscl 1.000000 1.000000\n")
-    # Write the color field using the Base Color from Principled BSDF
-    f.write(f"color {float(color_value[0]):.6f} {float(color_value[1]):.6f} {float(color_value[2]):.6f}\n")
-    f.write("normalscl 1.000000\n")
+    f.write("uvofs 0.0 0.0\n")
+    f.write("uvscl 1.0 1.0\n")
+    
+    # Set color based on Base Color input: white for texture, Principled BSDF color if no texture, else default red
+    color = [1.0, 0.0, 0.0]
+    if material.use_nodes and material.node_tree:
+        principled_bsdf = next((node for node in material.node_tree.nodes if node.type == 'BSDF_PRINCIPLED'), None)
+        if principled_bsdf and principled_bsdf.inputs.get('Base Color'):
+            base_color_input = principled_bsdf.inputs['Base Color']
+            if base_color_input.is_linked:
+                texture_node = find_texture_node(base_color_input.links[0].from_node)
+                if texture_node and texture_node.type == 'TEX_IMAGE':
+                    color = [1.0, 1.0, 1.0]
+            else:
+                color = [base_color_input.default_value[0], base_color_input.default_value[1], base_color_input.default_value[2]]
+    f.write(f"color {float(color[0]):.6f} {float(color[1]):.6f} {float(color[2]):.6f}\n")
+    
+    f.write("normalscl 1.0\n")
     f.write(f"roughness {float(roughness_value):.6f}\n")
     f.write(f"metallic {float(metallic_value):.6f}\n")
     f.write(f"specular {float(specular_value):.6f}\n")
-    f.write("emissive_color 1.000000 1.000000 1.000000\n")
-    f.write("emissive_strength 0.000000\n")
+    f.write("emissive_color 1.0 1.0 1.0\n")
+    f.write("emissive_strength 0.0\n")
     f.write("RenderingType Cutoff\n")
     if mask_map_filename:
         f.write(f"RMMap {mask_map_filename}0001.png\n")
     if sss_map_filename:
         f.write(f"SSSMap {sss_map_filename}0001.png\n")
-        f.write(f"sss_coeff {float(material_item.sss_coeff):.6f}\n" if material_item else "sss_coeff 1.000000\n")
-    f.write(f"discard_threshold {float(material_item.discard_threshold):.6f}\n" if material_item else "discard_threshold 0.900000\n")
+        f.write(f"sss_coeff {float(material_item.sss_coeff):.6f}\n" if material_item else "sss_coeff 1.0\n")
+    f.write(f"discard_threshold {float(material_item.discard_threshold):.6f}\n" if material_item else "discard_threshold 0.9\n")
     
     if material.use_nodes:
         for node in material.node_tree.nodes:
@@ -990,27 +1005,39 @@ def write_def_file(material, f, mask_map_filename, sss_map_filename, material_it
                                     if input.name in texture_dict:
                                         f.write(f"{texture_dict[input.name]} {filename}\n")
     
-    # Handle LitColor with Principled BSDF Base Color
-    base_color = color_value  # Use the same color_value for consistency
-    f.write(f"LitColor {float(base_color[0]):.6f} {float(base_color[1]):.6f} {float(base_color[2]):.6f} 1.000000\n")
-    f.write("ShadeColor 0.600000 0.600000 0.600000 1.000000\n")
-    f.write("toony 0.900000\n")
-    f.write("shift 0.000000\n")
-    f.write("LitShaderMixTexMult 0.000000\n")
-    f.write("lightColorAtt 0.000000\n")
-    f.write("EmissionInt 1.000000\n")
-    f.write("matCapScale 1.000000\n")
-    f.write("Rim 0.000000 0.000000 0.000000\n")
-    f.write("RimInt 1.000000\n")
-    f.write("RimLightingMix 0.000000\n")
-    f.write("RimFresnelPow 0.000000\n")
-    f.write("RimLift 0.000000\n")
-    f.write("cutOffThreshold 0.600000\n")
+    # Set LitColor to white if Base Color is linked to an image
+    lit_color = [1.0, 1.0, 1.0, 1.0]
+    if material.use_nodes and material.node_tree:
+        principled_bsdf = next((node for node in material.node_tree.nodes if node.type == 'BSDF_PRINCIPLED'), None)
+        if principled_bsdf and principled_bsdf.inputs.get('Base Color') and principled_bsdf.inputs['Base Color'].is_linked:
+            texture_node = find_texture_node(principled_bsdf.inputs['Base Color'].links[0].from_node)
+            if texture_node and texture_node.type == 'TEX_IMAGE':
+                lit_color = [1.0, 1.0, 1.0, 1.0]
+            else:
+                lit_color = material.diffuse_color if hasattr(material, 'diffuse_color') else [1.0, 1.0, 1.0, 1.0]
+        else:
+            lit_color = material.diffuse_color if hasattr(material, 'diffuse_color') else [1.0, 1.0, 1.0, 1.0]
+    f.write(f"LitColor {float(lit_color[0]):.6f} {float(lit_color[1]):.6f} {float(lit_color[2]):.6f} {float(lit_color[3]):.6f}\n")
+    
+    f.write("ShadeColor 0.6 0.6 0.6 1.0\n")
+    f.write("toony 0.9\n")
+    f.write("shift 0.0\n")
+    f.write("LitShaderMixTexMult 0.0\n")
+    f.write("lightColorAtt 0.0\n")
+    f.write("EmissionInt 1.0\n")
+    f.write("matCapScale 1.0\n")
+    f.write("Rim 0.0 0.0 0.0\n")
+    f.write("RimInt 1.0\n")
+    f.write("RimLightingMix 0.0\n")
+    f.write("RimFresnelPow 0.0\n")
+    f.write("RimLift 0.0\n")
+    f.write("cutOffThreshold 0.6\n")
     f.write("outlineType World\n")
-    f.write("outlineMaxScale 1.000000\n")
-    f.write("outlineMixLighting 0.000000\n")
-    f.write("UVRotateAnimation 0.000000\n")
+    f.write("outlineMaxScale 1.0\n")
+    f.write("outlineMixLighting 0.0\n")
+    f.write("UVRotateAnimation 0.0\n")
     f.write("\n")
+
 
 # Custom property group to store material details
 def update_shader_type(self, context):
